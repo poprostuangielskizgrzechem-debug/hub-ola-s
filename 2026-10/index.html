@@ -5709,11 +5709,139 @@ video {
             });
         }
 
-        // Pytania pod tekstem: klik w opcje od razu pokazuje dobrze/zle.
+        // Pytania pod tekstem (np. czytanka z testu). Pierwsze klikniecie blokuje
+        // pytanie: zla odpowiedz na czerwono, poprawna zawsze na zielono. Wybory
+        // i liczba prob zapisuja sie w przegladarce (WQ_KEY), "Resetuj" czysci
+        // wybory i otwiera kolejna probe. Pytania bez options = do dyskusji, bez punktow.
+        var WQ_KEY = STORAGE_KEY + '_teksty';
+        function wqLoad() {
+            try { var o = JSON.parse(safeGet(WQ_KEY) || '{}'); return (o && typeof o === 'object') ? o : {}; }
+            catch (e) { return {}; }
+        }
+        var wqState = wqLoad();
+        // Klucz po tytule i poczatku tekstu, nie po pozycji - nowy tekst dopisany
+        // pozniej w miesiacu nie przesunie zapisanych odpowiedzi.
+        function wqId(w) { return (w.title || '') + '|' + String(w.text || '').slice(0, 40); }
+        function wqSt(w) {
+            var k = wqId(w);
+            if (!wqState[k] || typeof wqState[k] !== 'object') wqState[k] = { picks: {}, attempts: 1 };
+            if (!wqState[k].picks) wqState[k].picks = {};
+            if (!wqState[k].attempts) wqState[k].attempts = 1;
+            return wqState[k];
+        }
+        function wqSave() { safeSet(WQ_KEY, JSON.stringify(wqState)); }
+        function wqGraded(w) {
+            return (w.questions || []).filter(function (q) { return q.options && q.options.length; });
+        }
+        function wqResult(w) {
+            var st = wqSt(w), ok = 0, answered = 0, wrong = [];
+            (w.questions || []).forEach(function (q, qi) {
+                if (!q.options || !q.options.length) return;
+                var p = st.picks[qi];
+                if (p === undefined) return;
+                answered++;
+                if (q.options[p] === q.answer) ok++;
+                else wrong.push({ num: qi + 1, picked: String.fromCharCode(65 + p), key: String.fromCharCode(65 + q.options.indexOf(q.answer)) });
+            });
+            return { ok: ok, answered: answered, total: wqGraded(w).length, wrong: wrong, attempts: st.attempts };
+        }
+        function wqShareText(w) {
+            var r = wqResult(w);
+            var lines = [
+                (HUB.student || 'Uczeń') + ' - ' + (HUB.monthLabel || '') + ', Teksty',
+                '',
+                (w.title || 'Tekst') + ': ' + r.ok + '/' + r.total + ' pkt',
+                'Próba nr ' + r.attempts
+            ];
+            if (r.answered < r.total) lines.push('Niedokończone: odpowiedzi na ' + r.answered + ' z ' + r.total + ' pytań');
+            if (r.wrong.length) {
+                lines.push('Błędy: ' + r.wrong.map(function (x) {
+                    return x.num + ' (zaznaczone ' + x.picked + ', poprawna ' + x.key + ')';
+                }).join(', '));
+            }
+            return lines.join('\n');
+        }
+        function wqApply(w, flatIdx) {
+            var box = el('hub-writing-list');
+            if (!box) return;
+            var st = wqSt(w);
+            (w.questions || []).forEach(function (q, qi) {
+                var btns = box.querySelectorAll('[data-wq="' + flatIdx + '"][data-wq-q="' + qi + '"]');
+                var p = st.picks[qi];
+                Array.prototype.forEach.call(btns, function (b, oi) {
+                    b.classList.remove('is-ok', 'is-bad');
+                    b.disabled = p !== undefined;
+                    b.style.cursor = p !== undefined ? 'default' : '';
+                    if (p === undefined) return;
+                    if (q.options[oi] === q.answer) b.classList.add('is-ok');
+                    else if (oi === p) b.classList.add('is-bad');
+                });
+            });
+            var r = wqResult(w);
+            var score = box.querySelector('[data-wq-score="' + flatIdx + '"]');
+            if (score) score.textContent = 'Wynik: ' + r.ok + '/' + r.total + ' pkt · próba nr ' + r.attempts +
+                (r.answered < r.total ? ' · odpowiedzi: ' + r.answered + ' z ' + r.total : '');
+            var text = wqShareText(w);
+            var encoded = encodeURIComponent(text);
+            var none = !r.answered;
+            var wa = box.querySelector('[data-wq-wa="' + flatIdx + '"]');
+            var mail = box.querySelector('[data-wq-mail="' + flatIdx + '"]');
+            var num = (HUB.teacherWhatsApp || '').replace(/[^0-9]/g, '');
+            if (wa) {
+                wa.classList.toggle('is-disabled', none);
+                wa.setAttribute('href', none ? '#' : 'https://wa.me/' + num + '?text=' + encoded);
+            }
+            if (mail) {
+                mail.classList.toggle('is-disabled', none);
+                mail.setAttribute('href', none ? '#' : 'mailto:?subject=' +
+                    encodeURIComponent((HUB.student || '') + ' - ' + (w.title || 'Teksty')) + '&body=' + encoded);
+            }
+            wqStatus(flatIdx, none ? 'Odpowiedz na przynajmniej jedno pytanie, żeby było co wysłać.' : '', false);
+        }
+        function wqStatus(flatIdx, msg, warn) {
+            var s = document.querySelector('[data-wq-status="' + flatIdx + '"]');
+            if (!s) return;
+            s.textContent = msg || '';
+            s.classList.toggle('is-warn', !!warn);
+        }
+        function wqCopy(flatIdx, text) {
+            var fb = document.querySelector('[data-wq-fallback="' + flatIdx + '"]');
+            function done() {
+                if (fb) fb.classList.add('hidden');
+                wqStatus(flatIdx, 'Skopiowane. Wklej na WhatsAppie albo gdzie chcesz.', false);
+            }
+            function manual() {
+                if (!fb) return;
+                fb.classList.remove('hidden');
+                fb.value = text;
+                fb.focus();
+                fb.select();
+                wqStatus(flatIdx, 'Zaznacz tekst poniżej i skopiuj ręcznie.', true);
+            }
+            function legacy() {
+                var ok = false;
+                try {
+                    var ta = document.createElement('textarea');
+                    ta.value = text;
+                    ta.setAttribute('readonly', '');
+                    ta.style.position = 'fixed';
+                    ta.style.opacity = '0';
+                    document.body.appendChild(ta);
+                    ta.select();
+                    ok = document.execCommand('copy');
+                    document.body.removeChild(ta);
+                } catch (e) { ok = false; }
+                if (ok) done(); else manual();
+            }
+            if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+                navigator.clipboard.writeText(text).then(done).catch(legacy);
+            } else legacy();
+        }
         function writingQuestionsHtml(w, flatIdx) {
             var qs = w.questions || [];
             if (!qs.length) return '';
-            return '<div class="hub-wq">' + qs.map(function (q, qi) {
+            var graded = wqGraded(w).length > 0;
+            var html = '<div class="hub-wq">' + qs.map(function (q, qi) {
                 var opts = (q.options || []).map(function (opt, oi) {
                     return '<button type="button" class="hub-ex-opt" data-wq="' + flatIdx + '" data-wq-q="' + qi + '" data-wq-opt="' + oi + '">' +
                         escapeHtml(String.fromCharCode(65 + oi) + '. ' + opt) + '</button>';
@@ -5723,6 +5851,23 @@ video {
                     (opts ? '<div style="display:flex;flex-direction:column;align-items:flex-start;gap:4px">' + opts + '</div>' : '') +
                     '</div>';
             }).join('') + '</div>';
+            if (!graded) return html;
+            return html +
+                '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin:16px 0 0">' +
+                '<span class="hub-ex-score" style="white-space:normal" data-wq-score="' + flatIdx + '"></span>' +
+                '<button type="button" class="hub-ex-btn" data-wq-reset="' + flatIdx + '">&#8635; Resetuj</button>' +
+                '</div>' +
+                '<div class="hub-share">' +
+                '<div class="hub-share-actions">' +
+                (typeof navigator.share === 'function'
+                    ? '<button type="button" class="hub-cta hub-cta-alt" data-wq-native="' + flatIdx + '">&#128228; Udost&#281;pnij</button>' : '') +
+                '<a class="hub-cta hub-cta-wa" data-wq-wa="' + flatIdx + '" href="#" target="_blank" rel="noopener">&#128172; Wy&#347;lij na WhatsApp</a>' +
+                '<button type="button" class="hub-cta hub-cta-alt" data-wq-copy="' + flatIdx + '">&#128203; Kopiuj tekst</button>' +
+                '<a class="hub-cta hub-cta-alt" data-wq-mail="' + flatIdx + '" href="#">&#9993;&#65039; Wy&#347;lij mailem</a>' +
+                '</div>' +
+                '<p class="hub-share-status" data-wq-status="' + flatIdx + '"></p>' +
+                '<textarea class="hub-share-fallback hidden" data-wq-fallback="' + flatIdx + '" readonly></textarea>' +
+                '</div>';
         }
 
         function renderWriting() {
@@ -5757,20 +5902,44 @@ video {
                 }).join('');
                 return '<details class="hub-lesson-group"' + (isLast ? ' open' : '') + '>' + head + body + '</details>';
             }).join('');
+            WRITING.forEach(function (w, wi) { if (wqGraded(w).length) wqApply(w, wi); });
 
             box.addEventListener('click', function (e) {
                 var wqBtn = e.target.closest ? e.target.closest('[data-wq]') : null;
                 if (wqBtn) {
-                    var wItem = WRITING[parseInt(wqBtn.getAttribute('data-wq'), 10)];
-                    var wq = wItem && wItem.questions[parseInt(wqBtn.getAttribute('data-wq-q'), 10)];
-                    if (!wq) return;
-                    var picked = wq.options[parseInt(wqBtn.getAttribute('data-wq-opt'), 10)];
-                    var siblings = wqBtn.parentNode.querySelectorAll('[data-wq]');
-                    for (var si = 0; si < siblings.length; si++) siblings[si].classList.remove('is-ok', 'is-bad', 'is-key');
-                    if (picked === wq.answer) {
-                        wqBtn.classList.add('is-ok');
-                    } else {
-                        wqBtn.classList.add('is-bad');
+                    var wIdx = parseInt(wqBtn.getAttribute('data-wq'), 10);
+                    var wItem = WRITING[wIdx];
+                    var wqi = parseInt(wqBtn.getAttribute('data-wq-q'), 10);
+                    if (!wItem || !wItem.questions[wqi]) return;
+                    var wst = wqSt(wItem);
+                    if (wst.picks[wqi] !== undefined) return;   // pytanie juz zablokowane
+                    wst.picks[wqi] = parseInt(wqBtn.getAttribute('data-wq-opt'), 10);
+                    wqSave();
+                    wqApply(wItem, wIdx);
+                    return;
+                }
+                var wqAct = e.target.closest ? e.target.closest('[data-wq-reset],[data-wq-copy],[data-wq-native]') : null;
+                if (wqAct) {
+                    wqAct.blur();
+                    var aIdx = parseInt(wqAct.getAttribute('data-wq-reset') || wqAct.getAttribute('data-wq-copy') || wqAct.getAttribute('data-wq-native'), 10);
+                    var aItem = WRITING[aIdx];
+                    if (!aItem) return;
+                    if (wqAct.hasAttribute('data-wq-reset')) {
+                        var rst = wqSt(aItem);
+                        if (Object.keys(rst.picks).length) rst.attempts++;
+                        rst.picks = {};
+                        wqSave();
+                        wqApply(aItem, aIdx);
+                        return;
+                    }
+                    if (!wqResult(aItem).answered) { wqStatus(aIdx, 'Odpowiedz na przynajmniej jedno pytanie, żeby było co wysłać.', true); return; }
+                    if (wqAct.hasAttribute('data-wq-copy')) { wqCopy(aIdx, wqShareText(aItem)); return; }
+                    try {
+                        navigator.share({ text: wqShareText(aItem) }).catch(function () {
+                            wqStatus(aIdx, 'Udostępnianie anulowane - spróbuj WhatsApp albo Kopiuj tekst.', false);
+                        });
+                    } catch (err) {
+                        wqStatus(aIdx, 'Udostępnianie niedostępne - użyj WhatsApp albo Kopiuj tekst.', false);
                     }
                     return;
                 }
