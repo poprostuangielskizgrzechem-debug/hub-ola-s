@@ -5179,6 +5179,9 @@ video {
         function playWritingSentence() {
             var wp = writingPlayback;
             if (!wp) return;
+            // Timer przerwy miedzy zdaniami juz sie wykonal - bez wyzerowania
+            // pauza bralaby go za trwajaca cisze i nie przerywala lektora.
+            wp.timer = null;
             var mySession = wp.sessionId;
             if (wp.idx >= wp.sentences.length) { stopWritingPlayback(); return; }
             updateWritingSeekBar(wp.itemIdx, (wp.charOffsets[wp.idx] || 0) / wp.totalChars);
