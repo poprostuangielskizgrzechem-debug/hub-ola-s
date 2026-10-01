@@ -5234,7 +5234,13 @@ video {
                 writingPlayback.timer = null;
                 writingPlayback.pendingNext = true;
             } else {
-                try { window.speechSynthesis.pause(); } catch (e) { /* ignore */ }
+                // speechSynthesis.pause() bywa ignorowane w Chrome (glosy Google),
+                // wiec przerywamy i po wznowieniu czytamy biezace zdanie od poczatku.
+                // Nowy sessionId sprawia, ze onend przerwanej wypowiedzi nic nie robi.
+                writingSessionCounter++;
+                writingPlayback.sessionId = writingSessionCounter;
+                writingPlayback.pendingNext = true;
+                try { window.speechSynthesis.cancel(); } catch (e) { /* ignore */ }
             }
             updateWritingButtons();
         }
