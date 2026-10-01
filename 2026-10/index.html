@@ -2626,8 +2626,9 @@ video {
                     <div class="hub-share hidden" id="hub-ex-share-panel">
                         <div class="hub-share-actions">
                             <button type="button" class="hub-cta hub-cta-alt hidden" id="hub-ex-share-native">&#128228; Udost&#281;pnij</button>
-                            <a class="hub-cta hub-cta-wa" id="hub-ex-share-wa" href="#" target="_blank" rel="noopener">&#128172; Wy&#347;lij wyniki na WhatsApp</a>
-                            <button type="button" class="hub-cta hub-cta-alt" id="hub-ex-share-copy">&#128203; Kopiuj wyniki</button>
+                            <a class="hub-cta hub-cta-wa" id="hub-ex-share-wa" href="#" target="_blank" rel="noopener">&#128172; Wy&#347;lij na WhatsApp</a>
+                            <button type="button" class="hub-cta hub-cta-alt" id="hub-ex-share-copy">&#128203; Kopiuj tekst</button>
+                            <a class="hub-cta hub-cta-alt" id="hub-ex-share-mail" href="#">&#9993;&#65039; Wy&#347;lij mailem</a>
                         </div>
                         <p class="hub-share-status" id="hub-ex-share-status"></p>
                         <textarea class="hub-share-fallback hidden" id="hub-ex-share-fallback" readonly></textarea>
@@ -5325,6 +5326,7 @@ video {
             var k = String(exIdx);
             if (!exState[k] || typeof exState[k] !== 'object') exState[k] = { v: {}, checked: false, peeked: false };
             if (!exState[k].v) exState[k].v = {};
+            if (!exState[k].attempts) exState[k].attempts = 1;
             return exState[k];
         }
         function exSave() { safeSet(EX_KEY, JSON.stringify(exState)); }
@@ -5457,11 +5459,15 @@ video {
                     (isSelf ? '' :
                     '<div class="hub-ex-actions">' +
                     '<button type="button" class="hub-ex-btn hub-ex-btn-main" data-ex-check="' + exIdx + '">Sprawd&#378;</button>' +
-                    '<button type="button" class="hub-ex-btn" data-ex-show="' + exIdx + '">Poka&#380; odpowiedzi</button>' +
-                    '<button type="button" class="hub-ex-btn" data-ex-reset="' + exIdx + '">Wyczy&#347;&#263;</button>' +
+                    '<button type="button" class="hub-ex-btn" data-ex-reset="' + exIdx + '">&#8635; Resetuj</button>' +
                     '</div>') + '</details>';
             }).join('');
 
+            // Zasada blokady (2026-10-01, ta sama co w pytaniach pod tekstem):
+            // luka do klikniecia blokuje sie po pierwszym kliknieciu, luka do wpisania
+            // po "Sprawdz". Zablokowana luka pokazuje poprawna odpowiedz. "Resetuj"
+            // czysci cwiczenie i otwiera kolejna probe (st.attempts), ktora trafia
+            // do wiadomosci z wynikami. Caly widok odtwarza sie ze stanu (applyEx).
             function gapsOf(exIdx) {
                 return Array.prototype.slice.call(box.querySelectorAll('[data-ex="' + exIdx + '"]'));
             }
@@ -5469,14 +5475,14 @@ video {
             function answerOf(g) {
                 return EXERCISES[+g.getAttribute('data-ex')].items[+g.getAttribute('data-it')].answers[+g.getAttribute('data-gap')];
             }
-            function valueOf(g) {
-                if (g.tagName === 'INPUT') return g.value;
-                var p = g.querySelector('.hub-ex-opt.is-picked');
-                return p ? p.getAttribute('data-opt') : '';
+            function okValue(g, v) {
+                return !!String(v || '').trim() && exAccepted(answerOf(g)).some(function (x) { return exNorm(x) === exNorm(v); });
             }
-            function isOk(g) {
-                var v = valueOf(g);
-                return !!String(v).trim() && exAccepted(answerOf(g)).some(function (x) { return exNorm(x) === exNorm(v); });
+            function isLocked(g, st) {
+                if (st.checked) return true;
+                if (g.tagName === 'INPUT') return false;
+                var v = st.v[keyOf(g)];
+                return v !== undefined && v !== '';
             }
             function clearMarks(g) {
                 if (g.tagName === 'INPUT') {
@@ -5485,113 +5491,97 @@ video {
                     if (k && k.className === 'hub-ex-key') k.parentNode.removeChild(k);
                 } else {
                     Array.prototype.forEach.call(g.querySelectorAll('.hub-ex-opt'), function (b) {
-                        b.classList.remove('is-ok', 'is-bad', 'is-key');
+                        b.classList.remove('is-ok', 'is-bad', 'is-key', 'is-picked');
                     });
                 }
             }
-            function markCheck(exIdx) {
-                var gs = gapsOf(exIdx), ok = 0;
+            function applyEx(exIdx) {
+                var st = exSt(exIdx), gs = gapsOf(exIdx), ok = 0, locked = 0;
                 gs.forEach(function (g) {
                     clearMarks(g);
-                    var good = isOk(g);
-                    if (good) ok++;
+                    var v = st.v[keyOf(g)] || '';
+                    var lock = isLocked(g, st);
+                    if (lock) { locked++; if (okValue(g, v)) ok++; }
                     if (g.tagName === 'INPUT') {
-                        g.classList.toggle('is-ok', good);
-                        g.classList.toggle('is-bad', !good);
+                        g.value = v;
+                        g.readOnly = lock;
+                        if (!lock) return;
+                        var good = okValue(g, v);
+                        g.classList.add(good ? 'is-ok' : 'is-bad');
+                        if (!good) {
+                            var k = document.createElement('span');
+                            k.className = 'hub-ex-key';
+                            k.textContent = '(' + exAccepted(answerOf(g))[0] + ')';
+                            g.parentNode.insertBefore(k, g.nextSibling);
+                        }
                     } else {
-                        var p = g.querySelector('.hub-ex-opt.is-picked');
-                        if (p) p.classList.add(good ? 'is-ok' : 'is-bad');
+                        Array.prototype.forEach.call(g.querySelectorAll('.hub-ex-opt'), function (b) {
+                            var opt = b.getAttribute('data-opt');
+                            b.disabled = lock;
+                            b.style.cursor = lock ? 'default' : '';
+                            if (!lock) return;
+                            if (okValue(g, opt)) b.classList.add('is-ok');
+                            else if (opt === v) b.classList.add('is-bad');
+                        });
                     }
                 });
-                box.querySelector('[data-ex-score="' + exIdx + '"]').textContent = ok + ' / ' + gs.length;
+                var s = box.querySelector('[data-ex-score="' + exIdx + '"]');
+                if (s) s.textContent = (locked ? ok : '–') + ' / ' + s.getAttribute('data-ex-total') +
+                    (st.attempts > 1 ? ' · próba ' + st.attempts : '');
+                var chk = box.querySelector('[data-ex-check="' + exIdx + '"]');
+                if (chk) { chk.disabled = !!st.checked; chk.style.opacity = st.checked ? '.5' : ''; }
             }
-            function setScoreEmpty(exIdx) { var s = box.querySelector('[data-ex-score="' + exIdx + '"]'); s.textContent = '– / ' + s.getAttribute('data-ex-total'); }
 
-            // Przywrocenie zapisanych odpowiedzi.
-            EXERCISES.forEach(function (ex, exIdx) {
-                var st = exSt(exIdx);
-                gapsOf(exIdx).forEach(function (g) {
-                    var v = st.v[keyOf(g)];
-                    if (v === undefined || v === '') return;
-                    if (g.tagName === 'INPUT') g.value = v;
-                    else Array.prototype.forEach.call(g.querySelectorAll('.hub-ex-opt'), function (b) {
-                        b.classList.toggle('is-picked', b.getAttribute('data-opt') === v);
-                    });
-                });
-                if (st.checked) markCheck(exIdx);
-            });
+            EXERCISES.forEach(function (ex, exIdx) { if (ex.layout !== 'selfcheck') applyEx(exIdx); });
             Array.prototype.forEach.call(box.querySelectorAll('.hub-ex-selfinput'), function (inp) {
                 var v = exSt(+inp.getAttribute('data-self-ex')).v['s' + inp.getAttribute('data-it')];
                 if (v) inp.value = v;
             });
 
-            function touched(g) {
-                var exIdx = +g.getAttribute('data-ex');
-                var st = exSt(exIdx);
-                st.v[keyOf(g)] = valueOf(g);
-                if (st.checked) { st.checked = false; setScoreEmpty(exIdx); }
-                clearMarks(g);
-                exSave();
-                refreshExShare();
-            }
             box.addEventListener('input', function (e) {
                 if (e.target && e.target.classList && e.target.classList.contains('hub-ex-selfinput')) {
                     exSt(+e.target.getAttribute('data-self-ex')).v['s' + e.target.getAttribute('data-it')] = e.target.value;
                     exSave();
                     return;
                 }
-                if (e.target && e.target.classList && e.target.classList.contains('hub-ex-input')) touched(e.target);
+                if (e.target && e.target.classList && e.target.classList.contains('hub-ex-input')) {
+                    var g = e.target, st = exSt(+g.getAttribute('data-ex'));
+                    if (st.checked) return;
+                    st.v[keyOf(g)] = g.value;
+                    exSave();
+                    refreshExShare();
+                }
             });
             box.addEventListener('click', function (e) {
                 var opt = e.target.closest ? e.target.closest('.hub-ex-opt') : null;
                 if (opt) {
                     var grp = opt.parentNode;
-                    Array.prototype.forEach.call(grp.querySelectorAll('.hub-ex-opt'), function (b) { b.classList.toggle('is-picked', b === opt); });
-                    touched(grp);
+                    var gEx = +grp.getAttribute('data-ex');
+                    var gSt = exSt(gEx);
+                    if (isLocked(grp, gSt)) return;
+                    gSt.v[keyOf(grp)] = opt.getAttribute('data-opt');
+                    exSave();
+                    applyEx(gEx);
+                    refreshExShare();
                     return;
                 }
-                var t = e.target.closest ? e.target.closest('[data-ex-check],[data-ex-show],[data-ex-reset]') : null;
+                var t = e.target.closest ? e.target.closest('[data-ex-check],[data-ex-reset]') : null;
                 if (!t) return;
                 t.blur();
-                var exIdx;
+                var exIdx, st;
                 if (t.hasAttribute('data-ex-check')) {
                     exIdx = +t.getAttribute('data-ex-check');
-                    markCheck(exIdx);
                     exSt(exIdx).checked = true;
-                    exSave();
-                } else if (t.hasAttribute('data-ex-show')) {
-                    exIdx = +t.getAttribute('data-ex-show');
-                    exSt(exIdx).peeked = true;
-                    exSave();
-                    gapsOf(exIdx).forEach(function (g) {
-                        var a = exAccepted(answerOf(g));
-                        if (g.tagName === 'INPUT') {
-                            var old = g.nextSibling;
-                            if (old && old.className === 'hub-ex-key') old.parentNode.removeChild(old);
-                            var k = document.createElement('span');
-                            k.className = 'hub-ex-key';
-                            k.textContent = '(' + a[0] + ')';
-                            g.parentNode.insertBefore(k, g.nextSibling);
-                        } else {
-                            Array.prototype.forEach.call(g.querySelectorAll('.hub-ex-opt'), function (b) {
-                                var isKey = a.some(function (x) { return exNorm(x) === exNorm(b.getAttribute('data-opt')); });
-                                b.classList.toggle('is-key', isKey);
-                            });
-                        }
-                    });
                 } else {
                     exIdx = +t.getAttribute('data-ex-reset');
-                    var st = exSt(exIdx);
+                    st = exSt(exIdx);
+                    var any = st.checked || Object.keys(st.v).some(function (k) { return String(st.v[k] || '').trim(); });
+                    if (any) st.attempts = (st.attempts || 1) + 1;
                     st.v = {};
                     st.checked = false;
-                    exSave();
-                    gapsOf(exIdx).forEach(function (g) {
-                        clearMarks(g);
-                        if (g.tagName === 'INPUT') g.value = '';
-                        else Array.prototype.forEach.call(g.querySelectorAll('.hub-ex-opt'), function (b) { b.classList.remove('is-picked'); });
-                    });
-                    setScoreEmpty(exIdx);
                 }
+                exSave();
+                applyEx(exIdx);
                 refreshExShare();
             });
 
@@ -5607,11 +5597,15 @@ video {
             EXERCISES.forEach(function (ex, exIdx) {
                 var r = exResult(exIdx);
                 if (!r.filled) return;
-                var head = (ex.title || ('Ćwiczenie ' + (exIdx + 1))) + ': ' + r.ok + '/' + r.total;
-                if (exSt(exIdx).peeked) head += ' (podejrzane odpowiedzi)';
+                var st = exSt(exIdx);
+                var head = (ex.title || ('Ćwiczenie ' + (exIdx + 1))) + ': ' + r.ok + '/' + r.total + ' pkt, próba nr ' + st.attempts;
+                if (!st.checked && r.filled < r.total) head += ' (niedokończone: ' + r.filled + ' z ' + r.total + ')';
+                if (st.peeked) head += ' (podejrzane odpowiedzi)';
                 lines.push(head);
-                if (r.wrong.length) {
-                    lines.push('Błędy: ' + r.wrong.map(function (w) {
+                // Przed "Sprawdz" puste luki to nie bledy, tylko jeszcze nie zrobione.
+                var wrongList = st.checked ? r.wrong : r.wrong.filter(function (w) { return w.val; });
+                if (wrongList.length) {
+                    lines.push('Błędy: ' + wrongList.map(function (w) {
                         return '(' + w.num + ') ' + (w.val || '-');
                     }).join(', '));
                 }
@@ -5633,14 +5627,22 @@ video {
         function refreshExShare() {
             var panel = el('hub-ex-share-panel');
             var wa = el('hub-ex-share-wa');
+            var mail = el('hub-ex-share-mail');
             if (!panel || !wa) return;
             panel.classList.toggle('hidden', !EXERCISES.length);
             var n = exStartedCount();
             if (!n) {
                 wa.classList.add('is-disabled');
                 wa.setAttribute('href', '#');
+                if (mail) { mail.classList.add('is-disabled'); mail.setAttribute('href', '#'); }
                 setExStatus('Zrób przynajmniej jedno ćwiczenie, żeby było co wysłać.', false);
                 return;
+            }
+            if (mail) {
+                mail.classList.remove('is-disabled');
+                mail.setAttribute('href', 'mailto:?subject=' +
+                    encodeURIComponent((HUB.student || '') + ' - ćwiczenia ' + (HUB.monthLabel || '')) +
+                    '&body=' + encodeURIComponent(buildExShareText()));
             }
             var num = (HUB.teacherWhatsApp || '').replace(/[^0-9]/g, '');
             wa.classList.remove('is-disabled');
@@ -5660,10 +5662,10 @@ video {
                     if (!exStartedCount()) { setExStatus('Zrób przynajmniej jedno ćwiczenie, żeby było co wysłać.', true); return; }
                     try {
                         navigator.share({ text: buildExShareText() }).catch(function () {
-                            setExStatus('Udostępnianie anulowane - spróbuj WhatsApp albo Kopiuj wyniki.', false);
+                            setExStatus('Udostępnianie anulowane - spróbuj WhatsApp albo Kopiuj tekst.', false);
                         });
                     } catch (e) {
-                        setExStatus('Udostępnianie niedostępne - użyj WhatsApp albo Kopiuj wyniki.', false);
+                        setExStatus('Udostępnianie niedostępne - użyj WhatsApp albo Kopiuj tekst.', false);
                     }
                 });
             }
